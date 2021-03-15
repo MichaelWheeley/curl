@@ -5,11 +5,11 @@
  *                            | (__| |_| |  _ <| |___
  *                             \___|\___/|_| \_\_____|
  *
- * Copyright (C) 1998 - 2020, Daniel Stenberg, <daniel@haxx.se>, et al.
+ * Copyright (C) 1998 - 2021, Daniel Stenberg, <daniel@haxx.se>, et al.
  *
  * This software is licensed as described in the file COPYING, which
  * you should have received as part of this distribution. The terms
- * are also available at https://curl.haxx.se/docs/copyright.html.
+ * are also available at https://curl.se/docs/copyright.html.
  *
  * You may opt to use, copy, modify, merge, publish, distribute and/or sell
  * copies of the Software, and permit persons to whom the Software is
@@ -108,10 +108,12 @@ static const struct LongShort aliases[]= {
 #endif
   {"*q", "ftp-create-dirs",          ARG_BOOL},
   {"*r", "create-dirs",              ARG_BOOL},
+  {"*R", "create-file-mode",         ARG_STRING},
   {"*s", "max-redirs",               ARG_STRING},
   {"*t", "proxy-ntlm",               ARG_BOOL},
   {"*u", "crlf",                     ARG_BOOL},
   {"*v", "stderr",                   ARG_FILENAME},
+  {"*V", "aws-sigv4",                ARG_STRING},
   {"*w", "interface",                ARG_STRING},
   {"*x", "krb",                      ARG_STRING},
   {"*x", "krb4",                     ARG_STRING},
@@ -219,6 +221,7 @@ static const struct LongShort aliases[]= {
   {"A",  "user-agent",               ARG_STRING},
   {"b",  "cookie",                   ARG_STRING},
   {"ba", "alt-svc",                  ARG_STRING},
+  {"bb", "hsts",                     ARG_STRING},
   {"B",  "use-ascii",                ARG_BOOL},
   {"c",  "cookie-jar",               ARG_STRING},
   {"C",  "continue-at",              ARG_STRING},
@@ -272,6 +275,7 @@ static const struct LongShort aliases[]= {
   {"EB", "socks5-gssapi",            ARG_BOOL},
   {"EC", "etag-save",                ARG_FILENAME},
   {"ED", "etag-compare",             ARG_FILENAME},
+  {"EE", "curves",                   ARG_STRING},
   {"f",  "fail",                     ARG_BOOL},
   {"fa", "fail-early",               ARG_BOOL},
   {"fb", "styled-output",            ARG_BOOL},
@@ -303,6 +307,7 @@ static const struct LongShort aliases[]= {
   {"o",  "output",                   ARG_FILENAME},
   {"O",  "remote-name",              ARG_NONE},
   {"Oa", "remote-name-all",          ARG_BOOL},
+  {"Ob", "output-dir",               ARG_STRING},
   {"p",  "proxytunnel",              ARG_BOOL},
   {"P",  "ftp-port",                 ARG_STRING},
   {"q",  "disable",                  ARG_BOOL},
@@ -771,6 +776,12 @@ ParameterError getparameter(const char *flag, /* f or -long-flag */
         config->create_dirs = toggle;
         break;
 
+      case 'R': /* --create-file-mode */
+        err = oct2nummax(&config->create_file_mode, nextarg, 0777);
+        if(err)
+          return err;
+        break;
+
       case 's': /* --max-redirs */
         /* specified max no of redirects (http(s)), this accepts -1 as a
            special condition */
@@ -791,6 +802,11 @@ ParameterError getparameter(const char *flag, /* f or -long-flag */
       case 'u': /* --crlf */
         /* LF -> CRLF conversion? */
         config->crlf = toggle;
+        break;
+
+      case 'V': /* --aws-sigv4 */
+        config->authtype |= CURLAUTH_AWS_SIGV4;
+        GetStr(&config->aws_sigv4, nextarg);
         break;
 
       case 'v': /* --stderr */
@@ -1267,11 +1283,11 @@ ParameterError getparameter(const char *flag, /* f or -long-flag */
       break;
     case '4':
       /* IPv4 */
-      config->ip_version = 4;
+      config->ip_version = CURL_IPRESOLVE_V4;
       break;
     case '6':
       /* IPv6 */
-      config->ip_version = 6;
+      config->ip_version = CURL_IPRESOLVE_V6;
       break;
     case 'a':
       /* This makes the FTP sessions use APPE instead of STOR */
@@ -1286,6 +1302,12 @@ ParameterError getparameter(const char *flag, /* f or -long-flag */
       case 'a': /* --alt-svc */
         if(curlinfo->features & CURL_VERSION_ALTSVC)
           GetStr(&config->altsvc, nextarg);
+        else
+          return PARAM_LIBCURL_DOESNT_SUPPORT;
+        break;
+      case 'b': /* --hsts */
+        if(curlinfo->features & CURL_VERSION_HSTS)
+          GetStr(&config->hsts, nextarg);
         else
           return PARAM_LIBCURL_DOESNT_SUPPORT;
         break;
@@ -1725,6 +1747,10 @@ ParameterError getparameter(const char *flag, /* f or -long-flag */
         GetStr(&config->etag_compare_file, nextarg);
         break;
 
+      case 'E':
+        GetStr(&config->ssl_ec_curves, nextarg);
+        break;
+
       default: /* unknown flag */
         return PARAM_OPTION_UNKNOWN;
       }
@@ -1771,6 +1797,11 @@ ParameterError getparameter(const char *flag, /* f or -long-flag */
 
     case 'h': /* h for help */
       if(toggle) {
+        if(nextarg) {
+          global->help_category = strdup(nextarg);
+          if(!global->help_category)
+            return PARAM_NO_MEM;
+        }
         return PARAM_HELP_REQUESTED;
       }
       /* we now actually support --no-help too! */
@@ -1911,6 +1942,10 @@ ParameterError getparameter(const char *flag, /* f or -long-flag */
         config->default_node_flags = toggle?GETOUT_USEREMOTE:0;
         break;
       }
+      else if(subletter == 'b') { /* --output-dir */
+        GetStr(&config->output_dir, nextarg);
+        break;
+      }
       /* FALLTHROUGH */
     case 'o': /* --output */
       /* output file */
@@ -1956,7 +1991,7 @@ ParameterError getparameter(const char *flag, /* f or -long-flag */
       /* This makes the FTP sessions use PORT instead of PASV */
       /* use <eth0> or <192.168.10.10> style addresses. Anything except
          this will make us try to get the "default" address.
-         NOTE: this is a changed behaviour since the released 4.1!
+         NOTE: this is a changed behavior since the released 4.1!
       */
       GetStr(&config->ftpport, nextarg);
       break;
@@ -2219,7 +2254,7 @@ ParameterError getparameter(const char *flag, /* f or -long-flag */
       config->condtime = (curl_off_t)curl_getdate(nextarg, &now);
       if(-1 == config->condtime) {
         /* now let's see if it is a file name to get the time from instead! */
-        curl_off_t filetime = getfiletime(nextarg, config->global->errors);
+        curl_off_t filetime = getfiletime(nextarg, global);
         if(filetime >= 0) {
           /* pull the time out from the file */
           config->condtime = filetime;

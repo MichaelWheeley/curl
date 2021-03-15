@@ -6,11 +6,11 @@
 #                            | (__| |_| |  _ <| |___
 #                             \___|\___/|_| \_\_____|
 #
-# Copyright (C) 1998 - 2020, Daniel Stenberg, <daniel@haxx.se>, et al.
+# Copyright (C) 1998 - 2021, Daniel Stenberg, <daniel@haxx.se>, et al.
 #
 # This software is licensed as described in the file COPYING, which
 # you should have received as part of this distribution. The terms
-# are also available at https://curl.haxx.se/docs/copyright.html.
+# are also available at https://curl.se/docs/copyright.html.
 #
 # You may opt to use, copy, modify, merge, publish, distribute and/or sell
 # copies of the Software, and permit persons to whom the Software is
@@ -35,7 +35,7 @@ if [ "$NGTCP2" = yes ]; then
     make install
 
     cd $HOME
-    git clone --depth 1 -b tmp-quic https://gitlab.com/gnutls/gnutls.git pgtls
+    git clone --depth 1 https://gitlab.com/gnutls/gnutls.git pgtls
     cd pgtls
     ./bootstrap
     ./configure PKG_CONFIG_PATH=$HOME/ngbuild/lib/pkgconfig LDFLAGS="-Wl,-rpath,$HOME/ngbuild/lib" --with-included-libtasn1 --with-included-unistring --disable-guile --disable-doc --prefix=$HOME/ngbuild
@@ -43,7 +43,7 @@ if [ "$NGTCP2" = yes ]; then
     make install
   else
     cd $HOME
-    git clone --depth 1 -b OpenSSL_1_1_1d-quic-draft-27 https://github.com/tatsuhiro-t/openssl possl
+    git clone --depth 1 -b OpenSSL_1_1_1g-quic-draft-29 https://github.com/tatsuhiro-t/openssl possl
     cd possl
     ./config enable-tls1_3 --prefix=$HOME/ngbuild
     make
@@ -62,7 +62,10 @@ if [ "$NGTCP2" = yes ]; then
   git clone --depth 1 https://github.com/ngtcp2/ngtcp2
   cd ngtcp2
   autoreconf -i
-  ./configure PKG_CONFIG_PATH=$HOME/ngbuild/lib/pkgconfig LDFLAGS="-Wl,-rpath,$HOME/ngbuild/lib" --prefix=$HOME/ngbuild --enable-lib-only
+  if test -n "$GNUTLS"; then
+      WITHGNUTLS="--with-gnutls"
+  fi
+  ./configure PKG_CONFIG_PATH=$HOME/ngbuild/lib/pkgconfig LDFLAGS="-Wl,-rpath,$HOME/ngbuild/lib" --prefix=$HOME/ngbuild --enable-lib-only $WITHGNUTLS
   make
   make install
 fi
@@ -71,22 +74,45 @@ if [ "$TRAVIS_OS_NAME" = linux -a "$BORINGSSL" ]; then
   cd $HOME
   git clone --depth=1 https://boringssl.googlesource.com/boringssl
   cd boringssl
-  mkdir build
-  cd build
-  CXX="g++" CC="gcc" cmake -DCMAKE_BUILD_TYPE=release -DBUILD_SHARED_LIBS=1 ..
-  make
-  cd ..
+  CXX="g++" CC="gcc" cmake -H. -Bbuild -GNinja -DCMAKE_BUILD_TYPE=release -DBUILD_SHARED_LIBS=1
+  cmake --build build
   mkdir lib
-  cd lib
-  cp ../build/crypto/libcrypto.so .
-  cp ../build/ssl/libssl.so .
-  echo "BoringSSL lib dir: "`pwd`
-  cd ../build
-  make clean
-  rm -f CMakeCache.txt
-  CXX="g++" CC="gcc" cmake -DCMAKE_POSITION_INDEPENDENT_CODE=on ..
-  make
+  cp ./build/crypto/libcrypto.so ./lib/
+  cp ./build/ssl/libssl.so ./lib/
+  echo "BoringSSL lib dir: "`pwd`"/lib"
+  cmake --build build --target clean
+  rm -f build/CMakeCache.txt
+  CXX="g++" CC="gcc" cmake -H. -Bbuild -GNinja -DCMAKE_POSITION_INDEPENDENT_CODE=on
+  cmake --build build
   export LIBS=-lpthread
+fi
+
+if [ "$TRAVIS_OS_NAME" = linux -a "$OPENSSL3" ]; then
+  cd $HOME
+  git clone --depth=1 https://github.com/openssl/openssl
+  cd openssl
+  ./config enable-tls1_3 --prefix=$HOME/openssl3
+  make
+  make install_sw
+fi
+
+if [ "$TRAVIS_OS_NAME" = linux -a "$LIBRESSL" ]; then
+  cd $HOME
+  git clone --depth=1 -b v3.1.4 https://github.com/libressl-portable/portable.git libressl-git
+  cd libressl-git
+  ./autogen.sh
+  ./configure --prefix=$HOME/libressl
+  make
+  make install
+fi
+
+if [ "$TRAVIS_OS_NAME" = linux -a "$HYPER" ]; then
+  cd $HOME
+  git clone --depth=1 https://github.com/hyperium/hyper.git
+  curl https://sh.rustup.rs -sSf | sh -s -- -y
+  source $HOME/.cargo/env
+  cd $HOME/hyper
+  RUSTFLAGS="--cfg hyper_unstable_ffi" cargo build --features client,http1,http2,ffi
 fi
 
 if [ "$TRAVIS_OS_NAME" = linux -a "$QUICHE" ]; then
@@ -95,7 +121,7 @@ if [ "$TRAVIS_OS_NAME" = linux -a "$QUICHE" ]; then
   curl https://sh.rustup.rs -sSf | sh -s -- -y
   source $HOME/.cargo/env
   cd $HOME/quiche
-  cargo build -v --release --features pkg-config-meta,qlog
+  cargo build -v --release --features ffi,pkg-config-meta,qlog
   mkdir -v deps/boringssl/src/lib
   ln -vnf $(find target/release -name libcrypto.a -o -name libssl.a) deps/boringssl/src/lib/
 fi
