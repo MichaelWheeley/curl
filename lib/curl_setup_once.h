@@ -70,7 +70,10 @@
 #endif
 
 #if defined(HAVE_STDBOOL_H) && defined(HAVE_BOOL_T)
-#include <stdbool.h>
+typedef int bool;
+#define false 0
+#define true 1
+////#include <stdbool.h>
 #endif
 
 #ifdef HAVE_UNISTD_H
